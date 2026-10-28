@@ -21,6 +21,8 @@ jobs:
         - name: iOS
           os: macos-latest
           target: iOS
+          # geode-sdk/bindings changes on 2026-10-27 break iOS codegen; pin to the day before
+          bindings-ref: 054c5b33408ae9863d896f1d2eab3b7e660adeba
 
         - name: Android32
           os: ubuntu-latest
@@ -41,6 +43,7 @@ jobs:
         with:
           combine: true
           target: ${{ matrix.config.target }}
+          bindings-ref: ${{ matrix.config.bindings-ref }}
 
       - name: Report build errors
         if: failure()
