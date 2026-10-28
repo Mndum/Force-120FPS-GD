@@ -21,7 +21,6 @@ jobs:
         - name: iOS
           os: macos-latest
           target: iOS
-          sdk: nightly
 
         - name: Android32
           os: ubuntu-latest
@@ -42,7 +41,6 @@ jobs:
         with:
           combine: true
           target: ${{ matrix.config.target }}
-          sdk: ${{ matrix.config.sdk || 'latest' }}
 
       - name: Report build errors
         if: failure()
