@@ -8,7 +8,7 @@
     },
     "id": "cesar.force-120fps",
     "name": "Force 120 FPS",
-    "version": "v1.2.0",
+    "version": "v1.3.0",
     "developer": "Cesar",
     "description": "Runs Geometry Dash at 120 FPS on PC, Mac and Android, even on 60 Hz screens.",
     "tags": [
