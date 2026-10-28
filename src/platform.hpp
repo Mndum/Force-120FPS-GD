@@ -11,9 +11,9 @@ namespace fps_platform {
     // Highest refresh rate the screen supports, or 0 if unknown.
     double maxRefreshRate();
 
-    // A one-line hint for the player if something outside the mod is holding
-    // the frame rate back (empty string if nothing to say).
-    std::string blockerHint(double fps);
+    // A one-line hint for the player if the game isn't reaching the target
+    // (empty string if nothing to say). `measured` is the real FPS.
+    std::string blockerHint(double fps, double measured);
 
     // Whether the cocos director's animation interval should be touched on
     // this platform.

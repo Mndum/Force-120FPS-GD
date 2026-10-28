@@ -2,6 +2,7 @@
 #include <Geode/modify/GameManager.hpp>
 #include <Geode/modify/AppDelegate.hpp>
 #include <cmath>
+#include <chrono>
 #include "platform.hpp"
 
 using namespace geode::prelude;
@@ -52,6 +53,22 @@ class FPSEnforcer : public CCObject {
     int m_ticks = 0;
     bool m_hintShown = false;
 
+    // Real frame-rate measurement
+    unsigned int m_lastFrames = 0;
+    std::chrono::steady_clock::time_point m_lastTime {};
+    double m_measured = 0.0;
+
+    void measure() {
+        auto now = std::chrono::steady_clock::now();
+        unsigned int frames = CCDirector::sharedDirector()->getTotalFrames();
+        if (m_lastTime != std::chrono::steady_clock::time_point {}) {
+            double secs = std::chrono::duration<double>(now - m_lastTime).count();
+            if (secs > 0.0) m_measured = (frames - m_lastFrames) / secs;
+        }
+        m_lastFrames = frames;
+        m_lastTime = now;
+    }
+
 public:
     static FPSEnforcer* get() {
         static FPSEnforcer* instance = [] {
@@ -83,14 +100,26 @@ public:
             applyFPS();
         }
 
-        // A few seconds in, tell the player if something outside the mod is
-        // still holding the frame rate back. Once per launch.
-        if (!m_hintShown && m_ticks == 6) {
+        // Measure the real FPS over 2-second windows.
+        if (m_ticks % 4 == 0) {
+            measure();
+            if (m_ticks % 20 == 0 && m_measured > 0) {
+                log::info("Measured {:.1f} FPS (target {})", m_measured, fps);
+            }
+        }
+
+        // ~6 seconds in (after the first full measurement window with our
+        // settings applied), tell the player if the target isn't being hit
+        // and what's holding it back. Once per launch.
+        if (!m_hintShown && m_ticks == 12 && m_measured > 0) {
             m_hintShown = true;
-            auto hint = fps_platform::blockerHint(fps);
+            auto hint = fps_platform::blockerHint(fps, m_measured);
             if (!hint.empty()) {
                 log::warn("{}", hint);
                 Notification::create(hint, NotificationIcon::Warning, 6.f)->show();
+            }
+            else {
+                log::info("Hitting target: {:.1f} FPS", m_measured);
             }
         }
     }
@@ -139,6 +168,7 @@ $on_mod(Loaded) {
     });
 
     listenForSettingChanges<int64_t>("target-fps", [](int64_t) { applyFPS(); });
+    listenForSettingChanges<bool>("uncap-mobile", [](bool) { applyFPS(); });
     listenForSettingChanges<bool>("disable-vsync", [](bool enabled) {
 #ifdef GEODE_IS_DESKTOP
         if (!enabled) {

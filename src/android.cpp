@@ -5,21 +5,59 @@
 
 #include <Geode/cocos/platform/android/jni/JniHelper.h>
 #include <jni.h>
+#include <dlfcn.h>
 
 using namespace geode::prelude;
 
 // On Android the Geode launcher owns the frame loop: the game's
-// setAnimationInterval() calls are ignored and the renderer simply draws once
-// per screen refresh. So to get 120 FPS we have to get the *screen* to run at
-// 120 Hz, which is done by asking Android for that rate on the game's surface
-// (Surface.setFrameRate, Android 11+). We also lift the launcher's optional
-// "Limit Frame Rate" setting if it is below the target.
+// setAnimationInterval() calls are ignored and the renderer draws once per
+// screen refresh, because every frame waits for the screen (VSync).
+//
+// Two things get us to 120:
+//  1. Ask Android to switch the screen to 120 Hz when it can
+//     (Surface.setFrameRate, Android 11+).
+//  2. "Run past screen refresh": turn VSync off on the game's GL surface
+//     (eglSwapInterval 0) so frames no longer wait for the screen, then have
+//     the launcher's own frame pacer hold the game at exactly the target.
+//     On a 60 Hz phone the game then updates, reads taps and renders at 120;
+//     the screen just shows the newest frame each time it refreshes.
 
 namespace {
     // Cached weak reference to the game's GLSurfaceView.
     jweak s_glView = nullptr;
     double s_maxRefresh = 0.0;
     double s_currentRefresh = 0.0;
+    int s_swapInterval = -1; // last value we successfully set
+
+    bool uncapEnabled() {
+        return Mod::get()->getSettingValue<bool>("uncap-mobile");
+    }
+
+    // eglSwapInterval on the game's current surface. Loaded at runtime so the
+    // mod doesn't need to link EGL directly.
+    bool setSwapInterval(int interval) {
+        using GetDisplayFn = void* (*)();
+        using GetContextFn = void* (*)();
+        using SwapIntervalFn = unsigned int (*)(void*, int);
+
+        static void* egl = [] {
+            void* h = dlopen("libEGL.so", RTLD_NOW | RTLD_NOLOAD);
+            return h ? h : dlopen("libEGL.so", RTLD_NOW);
+        }();
+        if (!egl) return false;
+
+        static auto getDisplay = reinterpret_cast<GetDisplayFn>(dlsym(egl, "eglGetCurrentDisplay"));
+        static auto getContext = reinterpret_cast<GetContextFn>(dlsym(egl, "eglGetCurrentContext"));
+        static auto swapInterval = reinterpret_cast<SwapIntervalFn>(dlsym(egl, "eglSwapInterval"));
+        if (!getDisplay || !getContext || !swapInterval) return false;
+
+        // Only valid on the render thread with the game's context current
+        if (!getContext()) return false;
+        void* display = getDisplay();
+        if (!display) return false;
+
+        return swapInterval(display, interval) != 0;
+    }
 
     JNIEnv* getEnv() {
         JavaVM* vm = JniHelper::getJavaVM();
@@ -206,10 +244,12 @@ namespace {
         failed(env);
     }
 
-    // The launcher's renderer can sleep between frames ("Limit Frame Rate"
-    // setting). Raise that limit to the target, and on screens faster than the
-    // target (e.g. 144 Hz) cap it at the target so it really is 120.
-    void fixRendererLimit(JNIEnv* env, jobject glView, int fps) {
+    // The launcher's renderer can sleep between frames to pace itself
+    // ("Limit Frame Rate" setting). Make that pace exactly the target:
+    //  - always when VSync is off (otherwise it would run uncapped),
+    //  - when the launcher limit is slower than the target,
+    //  - on screens faster than the target (144/165 Hz) so it really is 120.
+    void fixRendererLimit(JNIEnv* env, jobject glView, int fps, bool forceCap) {
         jclass cocosView = env->FindClass("org/cocos2dx/lib/Cocos2dxGLSurfaceView");
         if (failed(env) || !cocosView || !env->IsInstanceOf(glView, cocosView)) return;
 
@@ -222,7 +262,7 @@ namespace {
         jmethodID limit = env->GetMethodID(rendererCls, "limitFrameRate", "(I)V");
         if (failed(env) || !limit) return;
 
-        bool needsLimit = false;
+        bool needsLimit = forceCap;
 
         // Current launcher limit (null = unlimited)
         jfieldID intervalField = env->GetFieldID(rendererCls, "mAnimationInterval", "Ljava/lang/Long;");
@@ -266,9 +306,24 @@ namespace fps_platform {
         jobject activity = getActivity(env);
         readDisplayInfo(env, activity);
 
+        bool uncap = uncapEnabled();
+
+        // Render-thread VSync: off to run past the screen, back on otherwise.
+        int wantInterval = uncap ? 0 : 1;
+        if (s_swapInterval != wantInterval || uncap) {
+            // Re-applied every time while uncapped: Android resets it when
+            // the surface is recreated (e.g. after leaving and reopening).
+            if (setSwapInterval(wantInterval)) {
+                if (s_swapInterval != wantInterval) {
+                    log::info("VSync {} on the game surface", uncap ? "disabled" : "restored");
+                }
+                s_swapInterval = wantInterval;
+            }
+        }
+
         if (jobject gl = getGLView(env, activity)) {
             requestSurfaceRate(env, gl, static_cast<float>(fps));
-            fixRendererLimit(env, gl, static_cast<int>(fps));
+            fixRendererLimit(env, gl, static_cast<int>(fps), uncap && s_swapInterval == 0);
         }
 
         failed(env);
@@ -277,19 +332,37 @@ namespace fps_platform {
 
     double maxRefreshRate() { return s_maxRefresh; }
 
-    std::string blockerHint(double fps) {
-        if (s_maxRefresh > 0 && s_maxRefresh + 1.0 < fps) {
+    std::string blockerHint(double fps, double measured) {
+        // Hitting the target: nothing to complain about.
+        if (measured + 5.0 >= fps) return "";
+
+        if (!uncapEnabled()) {
+            if (s_maxRefresh > 0 && s_maxRefresh + 1.0 < fps) {
+                return fmt::format(
+                    "Running at {:.0f} FPS because your screen is {:.0f} Hz. Turn on "
+                    "\"Run past screen refresh\" in this mod's settings to go to {:.0f}.",
+                    measured, s_maxRefresh, fps
+                );
+            }
+            if (s_currentRefresh > 0 && s_currentRefresh + 1.0 < fps) {
+                return fmt::format(
+                    "Running at {:.0f} FPS. Your phone is holding the screen at {:.0f} Hz: turn off "
+                    "Battery Saver, or turn on \"Run past screen refresh\" in this mod's settings.",
+                    measured, s_currentRefresh
+                );
+            }
+        }
+        else if (s_swapInterval != 0) {
             return fmt::format(
-                "Your screen tops out at {:.0f} Hz, so that's the most FPS it can show.", s_maxRefresh
+                "Running at {:.0f} FPS. This phone's graphics driver won't let the game "
+                "run faster than the screen.", measured
             );
         }
-        if (s_currentRefresh > 0 && s_currentRefresh + 1.0 < fps) {
-            return fmt::format(
-                "Your phone is holding the screen at {:.0f} Hz. Turn off Battery Saver and set "
-                "the display's refresh rate to High / Adaptive in Android settings.", s_currentRefresh
-            );
-        }
-        return "";
+
+        return fmt::format(
+            "Only reaching {:.0f} of {:.0f} FPS. The device may be too slow, or Battery Saver "
+            "is throttling it.", measured, fps
+        );
     }
 
     // The launcher ignores the director interval, but setting it is harmless

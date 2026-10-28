@@ -8,10 +8,13 @@
     },
     "id": "cesar.force-120fps",
     "name": "Force 120 FPS",
-    "version": "v1.1.0",
+    "version": "v1.2.0",
     "developer": "Cesar",
-    "description": "Runs Geometry Dash at 120 FPS on PC, Mac, and 120 Hz phones and tablets.",
-    "tags": ["performance", "enhancement"],
+    "description": "Runs Geometry Dash at 120 FPS on PC, Mac and Android, even on 60 Hz screens.",
+    "tags": [
+        "performance",
+        "enhancement"
+    ],
     "settings": {
         "target-fps": {
             "type": "int",
@@ -21,10 +24,16 @@
             "min": 30,
             "max": 1000
         },
+        "uncap-mobile": {
+            "type": "bool",
+            "name": "Run past screen refresh (Android)",
+            "description": "Runs the game at the target FPS even if your screen refreshes slower (e.g. 120 FPS on a 60 Hz phone). The game updates and reads taps at the full rate; the screen shows the newest frame each refresh. Uses more battery and may warm the phone.",
+            "default": true
+        },
         "disable-vsync": {
             "type": "bool",
             "name": "Disable VSync (PC/Mac)",
-            "description": "VSync caps the game at your monitor's refresh rate. Turn it off so 120 FPS works even on a 60 Hz monitor. Has no effect on phones, which always sync to the screen.",
+            "description": "VSync caps the game at your monitor's refresh rate. Turn it off so 120 FPS works even on a 60 Hz monitor.",
             "default": true
         }
     }

@@ -89,7 +89,8 @@ namespace fps_platform {
         }
     }
 
-    std::string blockerHint(double fps) {
+    std::string blockerHint(double fps, double measured) {
+        if (measured + 5.0 >= fps) return "";
         double max = maxRefreshRate();
         if (max + 1.0 < fps) {
             return fmt::format(
