@@ -56,6 +56,8 @@ jobs:
     needs: ['build']
     # Package whatever platforms built, even if one (iOS) failed
     if: ${{ !cancelled() }}
+    permissions:
+      contents: write
 
     steps:
       - uses: geode-sdk/build-geode-mod/combine@main
@@ -65,3 +67,16 @@ jobs:
         with:
           name: force-120fps-geode
           path: ${{ steps.build.outputs.build-output }}
+
+      - name: Publish to the "Latest build" release
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          files=$(find "${{ steps.build.outputs.build-output }}" -name '*.geode')
+          echo "Found: $files"
+          gh release view latest-build --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create latest-build --repo "$GITHUB_REPOSITORY" --title "Latest build" \
+              --notes "Automatic build of Force 120 FPS. Download the .geode file below and drop it in your Geode mods folder."
+          gh release upload latest-build $files --repo "$GITHUB_REPOSITORY" --clobber
